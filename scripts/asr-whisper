@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Speech-to-text command for the Feishu Source's `asrCommand` setting: transcribes one audio file to stdout.
+# Install: python3 -m venv ~/asr-venv && ~/asr-venv/bin/pip install faster-whisper 'av<17'
+#          HF_ENDPOINT=https://hf-mirror.com ~/asr-venv/bin/python -c \
+#            'from huggingface_hub import snapshot_download as s; s("mobiuslabsgmbh/faster-whisper-large-v3-turbo", cache_dir=__import__("os").path.expanduser("~/models/faster-whisper-hub"))'
+# Then set 语音转写命令 / Voice transcription command to the absolute path of this script.
+exec "${ASR_PYTHON:-$HOME/asr-venv/bin/python}" "$(dirname "$(readlink -f "$0")")/asr-whisper.py" "${1:?usage: asr-whisper <audio-file>}"

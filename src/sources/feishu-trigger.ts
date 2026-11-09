@@ -9,7 +9,7 @@ export const feishuChannel = (chatId: string, messageId: string, direct = false)
   ({ source: SOURCE, thread: `feishu:${chatId}`, address: { chatId, messageId, ...direct ? { direct: 'true' } : {} } })
 /** A message as the live event consumer prints it; the history and topic-page paths normalize what they read into this shape. */
 const EventSchema = z.object({ message_id: z.string(), chat_id: z.string(), chat_type: z.enum(['p2p', 'group']),
-  sender_id: z.string(), sender_type: z.enum(['user', 'bot']), content: z.string(), create_time: z.string(),
+  sender_id: z.string(), sender_type: z.enum(['user', 'bot']), content: z.string(), msg_type: z.string().optional(), create_time: z.string(),
   mentions: z.array(z.object({ id: z.string(), key: z.string().optional(), name: z.string().optional() })).default([]),
   root_id: z.string().optional(), parent_id: z.string().optional(), thread_id: z.string().optional(), message_app_link: z.url().optional() })
 export type FeishuEvent = z.infer<typeof EventSchema>
@@ -39,7 +39,8 @@ export function feishuTrigger(input: unknown, botId: string, botAppId: string): 
     ...(direct ? { addressed: 'direct' as const } : mentioned ? { addressed: 'mention' as const } : {}),
     at: feishuTime(event.create_time), text: withMentionNames(event.content, event.mentions),
     channel: feishuChannel(event.chat_id, event.message_id, direct), ...(event.message_app_link ? { url: event.message_app_link } : {}),
-    meta: { chatId: event.chat_id, messageId: event.message_id, direct, mentioned, ...(event.root_id ? { rootId: event.root_id } : {}),
+    meta: { chatId: event.chat_id, messageId: event.message_id, direct, mentioned,
+      ...(event.msg_type && event.msg_type !== 'text' ? { msgType: event.msg_type } : {}), ...(event.root_id ? { rootId: event.root_id } : {}),
       ...(event.parent_id ? { parentId: event.parent_id } : {}), ...(event.thread_id ? { threadId: event.thread_id } : {}) } }
 }
 export const feishuParent = (trigger: Trigger): string | undefined =>
@@ -52,7 +53,7 @@ export function feishuRef(trigger: Trigger): FeishuRef | undefined {
 
 /** A message from the history API; a deleted message may have no body/content. */
 export const HistoricalMessageSchema = z.looseObject({
-  message_id: z.string(), chat_id: z.string(), create_time: z.string(),
+  message_id: z.string(), chat_id: z.string(), create_time: z.string(), msg_type: z.string().optional(),
   root_id: z.string().optional(), parent_id: z.string().optional(), thread_id: z.string().optional(),
   deleted: z.boolean().optional(), message_app_link: z.string().optional(),
   sender: z.looseObject({ id: z.string().default(''), sender_type: z.string() }),
@@ -74,8 +75,8 @@ export function historyText(message: HistoricalMessage): string {
 export function historyEvent(message: HistoricalMessage, chatId: string, direct: boolean): unknown {
   return { message_id: message.message_id, chat_id: chatId, chat_type: direct ? 'p2p' : 'group', create_time: message.create_time,
     sender_id: message.sender.id, sender_type: message.sender.sender_type === 'user' ? 'user' : 'bot', content: historyText(message),
-    mentions: message.mentions ?? [], root_id: message.root_id, parent_id: message.parent_id, thread_id: message.thread_id,
-    message_app_link: message.message_app_link }
+    msg_type: message.msg_type, mentions: message.mentions ?? [], root_id: message.root_id, parent_id: message.parent_id,
+    thread_id: message.thread_id, message_app_link: message.message_app_link }
 }
 /**
  * Adapts a topic-page message into the live-event schema, falling back to `root` when Feishu omits `root_id` on replies;
@@ -84,6 +85,7 @@ export function historyEvent(message: HistoricalMessage, chatId: string, direct:
 export function topicEvent(message: FeishuMessage, chatId: string, direct: boolean, root: string): unknown {
   return { message_id: message.message_id, chat_id: chatId, chat_type: direct ? 'p2p' : 'group', create_time: message.create_time,
     sender_id: message.sender.open_bot_id ?? message.sender.id, sender_type: message.sender.sender_type === 'user' ? 'user' : 'bot',
-    content: message.content ?? '', mentions: message.mentions ?? [], parent_id: message.parent_id, thread_id: message.thread_id,
+    content: message.content ?? '', msg_type: message.msg_type, mentions: message.mentions ?? [], parent_id: message.parent_id,
+    thread_id: message.thread_id,
     root_id: message.root_id ?? (message.message_id === root ? undefined : root), message_app_link: message.message_app_link }
 }

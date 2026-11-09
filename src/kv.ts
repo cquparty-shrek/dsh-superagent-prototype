@@ -50,9 +50,11 @@ export const KV = {
     ci: family<{ fingerprint: string; revision: number }, [number: number]>('github-ci:') },
   /**
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
-   * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.
+   * to last-seen timestamp; per-polled-thread seen message IDs and initialization flag; and voice-message transcripts by
+   * message ID, so a message read again (backfill or polling) is never transcribed twice.
    */
   feishu: { chats: record<Record<string, boolean>>('feishu-chats'), history: family<string, [chat: string]>('feishu-history:'),
     topics: family<Record<string, string>, [chat: string]>('feishu-history-threads:'),
+    transcripts: record<Record<string, string>>('feishu-transcripts'),
     seen: family<string[], [thread: string]>('thread-seen:'), initialized: family<boolean, [thread: string]>('thread-initialized:') },
 }
