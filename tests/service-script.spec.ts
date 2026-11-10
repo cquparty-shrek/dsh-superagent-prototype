@@ -40,6 +40,9 @@ done < "$list"`)
   program('tmux', `for a in "$@"; do printf '%s\\n' "$a"; done >> '${root}/tmux.log'; echo --- >> '${root}/tmux.log'\n`
     + `case "$1" in has-session) exit 1;; new-*) touch '${root}/launched'; cat '${root}/pane';; esac`)
   program('dsh', 'exit 0')
+  // systemd-run stand-in: records how it wrapped the command, then runs it so the tmux stand-in's answer still arrives.
+  program('systemd-run', `printf '%s\\n' "$@" > '${root}/systemd-run.log'\n`
+    + `while [ $# -gt 0 ] && [ "$1" != tmux ]; do shift; done\nexec "$@"`)
 })
 afterEach(() => {
   server?.close(); server = undefined
@@ -47,9 +50,12 @@ afterEach(() => {
   sleepers = []
   rmSync(root, { recursive: true, force: true })
 })
-function run(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise(resolve => execFile('python3', [join(root, 'scripts', 'dsh-superagent'), ...args],
-    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '' },
+function run(...args: (string | Record<string, string>)[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  // A trailing object adds environment variables, such as DSH_SUPERAGENT_SYSTEMD to choose how tmux starts.
+  const extra = typeof args.at(-1) === 'object' ? args.pop() as Record<string, string> : {}
+  const argv = args as string[]
+  return new Promise(resolve => execFile('python3', [join(root, 'scripts', 'dsh-superagent'), ...argv],
+    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '', ...extra },
       timeout: 20_000 },
     (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })))
 }
@@ -210,6 +216,39 @@ it('starts the service in a new window of the profile\'s tmux session when the s
   const calls = readFileSync(join(root, 'tmux.log'), 'utf8').split('---\n').map(call => call.split('\n'))
   expect(calls.find(call => call[0] === 'new-window')).toEqual(expect.arrayContaining(['-t', '=dsh-superagent:']))
   expect(calls.some(call => call[0] === 'new-session')).toBe(false)
+}, 20_000)
+it('starts the tmux server in its own transient unit, carrying this caller\'s environment into it', async () => {
+  const url = await answering()
+  const path = `${join(root, 'bin')}:${process.env.PATH}`
+  const pid = sleeper()
+  writeFileSync(join(root, 'pane'), `${pid}\n`)
+  started(service(pid))
+  const started_run = await run('start', '--url', url, '--timeout', '10', { DSH_SUPERAGENT_SYSTEMD: 'on' })
+  expect(started_run).toMatchObject({ code: 0, stdout: expect.stringContaining('Log: ') })
+  expect(readFileSync(join(control('superagent'), 'service.pid'), 'utf8')).toBe(`${pid}\n`)
+  const wrapper = readFileSync(join(root, 'systemd-run.log'), 'utf8').split('\n')
+  // The unit must outlive its own main process, keep the pane PID answer, and start from this environment, not the manager's.
+  expect(wrapper).toEqual(expect.arrayContaining(['--user', '--wait', '--pipe', '--quiet', '-p', 'KillMode=process',
+    '--setenv=PATH=' + path, 'tmux']))
+  expect(wrapper).toContain('--description=dsh-superagent superagent tmux server')
+  expect(wrapper[wrapper.indexOf('tmux') + 1]).toBe('new-session')
+}, 20_000)
+it('starts tmux directly when systemd is switched off, and when a transient unit cannot be created', async () => {
+  const url = await answering()
+  const pid = sleeper()
+  writeFileSync(join(root, 'pane'), `${pid}\n`)
+  started(service(pid))
+  expect(await run('start', '--url', url, '--timeout', '10', { DSH_SUPERAGENT_SYSTEMD: 'off' })).toMatchObject({ code: 0 })
+  expect(existsSync(join(root, 'systemd-run.log'))).toBe(false)
+  // A launcher that failed started nothing, so the plain attempt that follows cannot duplicate the service.
+  program('systemd-run', `printf '%s\\n' "$@" > '${root}/systemd-run.log'; echo 'Failed to connect to bus: no medium found' >&2; exit 1`)
+  rmSync(join(root, 'launched')); rmSync(join(root, 'tmux.log'), { force: true })
+  const second = sleeper()
+  started(service(second))
+  writeFileSync(join(control('superagent'), 'service.pid'), `${second}\n`)
+  expect(await run('start', '--url', url, '--timeout', '10', { DSH_SUPERAGENT_SYSTEMD: 'on' })).toMatchObject({ code: 0 })
+  expect(readFileSync(join(root, 'systemd-run.log'), 'utf8')).toContain('KillMode=process')
+  expect(readFileSync(join(root, 'tmux.log'), 'utf8')).toContain('new-session')
 }, 20_000)
 it('exits 1 when the started service does not answer in time, and leaves its process running', async () => {
   const pid = sleeper()

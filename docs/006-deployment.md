@@ -106,6 +106,8 @@ scripts/dsh-superagent status
 
 `start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script.
 
+A tmux server daemonizes into the control group that started it, so a launcher whose group is torn down afterwards — a `systemd-run` job, a container step, an agent's scheduled command — would take that server and the service pane down seconds after it reported a successful start. Where a systemd user manager answers, `start` therefore asks it for a transient unit with `KillMode=process`, which leaves the server running when that unit finishes, and carries the caller's environment into it. Where none answers, `start` calls tmux directly. `DSH_SUPERAGENT_SYSTEMD=on` or `off` chooses either way.
+
 `stop` and `restart` request graceful shutdown and wait up to five minutes for Executors. They never force-kill the process or touch other tmux sessions.
 
 `status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`.
@@ -266,6 +268,7 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `status` exits 2 | A part reports an error, which a restart does not fix: `errors` names each part, as listed under Management API, with its detail; each part clears its own entry once it works again |
 | `status` exits 3 | Setup waits: `setup` says what is missing, and the overview links to the setting that fixes it |
 | `status` exits 1 | The service does not run, runs twice, does not answer, or its runtime reports an error; the output and the newest log say which |
+| The service stops about half a minute after a start that a scheduled job or an agent ran | That launcher's control group was torn down and took the tmux server with it; `start` avoids this where a systemd user manager answers, so start it from one, or from a shell that stays open |
 | `… timed out after 90 s`, `… was stopped by …`, `… exited with code …` or `… could not run: …` | A CLI failed without printing why; run the named program by hand as the operator's user to see its own message |
 | The panel says dsh-superagent is not answering | It is restarting, or did not start because of its configuration; the DeepSeek Harness log names the cause |
 | `dsh-superagent configuration has keys it does not use` (log) | Remove the named keys; the message says where each value lives now |
