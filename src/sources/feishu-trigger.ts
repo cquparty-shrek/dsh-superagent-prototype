@@ -7,9 +7,11 @@ export const SOURCE = 'feishu'
 /** Constructs a Feishu reply channel address; records `direct` explicitly because both group and direct chat IDs start with `oc_`. */
 export const feishuChannel = (chatId: string, messageId: string, direct = false): ChannelRef =>
   ({ source: SOURCE, thread: `feishu:${chatId}`, address: { chatId, messageId, ...direct ? { direct: 'true' } : {} } })
-/** A message as the live event consumer prints it; the history and topic-page paths normalize what they read into this shape. */
+/** A message as the live event consumer prints it; the history and topic-page paths normalize what they read into this shape.
+ *  The live consumer prints the type as `message_type`, while the reads and this shape's normalization use `msg_type`. */
 const EventSchema = z.object({ message_id: z.string(), chat_id: z.string(), chat_type: z.enum(['p2p', 'group']),
-  sender_id: z.string(), sender_type: z.enum(['user', 'bot']), content: z.string(), msg_type: z.string().optional(), create_time: z.string(),
+  sender_id: z.string(), sender_type: z.enum(['user', 'bot']), content: z.string(),
+  msg_type: z.string().optional(), message_type: z.string().optional(), create_time: z.string(),
   mentions: z.array(z.object({ id: z.string(), key: z.string().optional(), name: z.string().optional() })).default([]),
   root_id: z.string().optional(), parent_id: z.string().optional(), thread_id: z.string().optional(), message_app_link: z.url().optional() })
 export type FeishuEvent = z.infer<typeof EventSchema>
@@ -34,13 +36,14 @@ export function feishuTrigger(input: unknown, botId: string, botAppId: string): 
   const direct = event.chat_type === 'p2p'
   const mentioned = event.mentions.some(mention => mention.id === botId || mention.id === botAppId)
   const thread = feishuThreadId(event.chat_id, event.root_id, event.message_id)
+  const msgType = event.msg_type ?? event.message_type
   return { id: feishuTriggerId(event.message_id), source: SOURCE, threads: [{ source: SOURCE, id: thread }],
     actor: { source: SOURCE, id: event.sender_id }, human: event.sender_type === 'user',
     ...(direct ? { addressed: 'direct' as const } : mentioned ? { addressed: 'mention' as const } : {}),
     at: feishuTime(event.create_time), text: withMentionNames(event.content, event.mentions),
     channel: feishuChannel(event.chat_id, event.message_id, direct), ...(event.message_app_link ? { url: event.message_app_link } : {}),
     meta: { chatId: event.chat_id, messageId: event.message_id, direct, mentioned,
-      ...(event.msg_type && event.msg_type !== 'text' ? { msgType: event.msg_type } : {}), ...(event.root_id ? { rootId: event.root_id } : {}),
+      ...(msgType && msgType !== 'text' ? { msgType } : {}), ...(event.root_id ? { rootId: event.root_id } : {}),
       ...(event.parent_id ? { parentId: event.parent_id } : {}), ...(event.thread_id ? { threadId: event.thread_id } : {}) } }
 }
 export const feishuParent = (trigger: Trigger): string | undefined =>
