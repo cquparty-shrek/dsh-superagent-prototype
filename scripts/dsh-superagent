@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS = ROOT / '.artifacts'
 CONTROL = ARTIFACTS / 'control'
 KEEP_LOGS = 20
+# A tmux client that has not printed its pane pid after this long is stuck; the service may still have started.
+TMUX_TIMEOUT = 120
 
 
 def control(profile):
@@ -156,6 +158,54 @@ def prune_logs(profile):
         path.unlink(missing_ok=True)
 
 
+def systemd_launcher(profile):
+    """Return how to start tmux inside its own transient unit, or an empty list where no user manager can be asked.
+
+    A tmux server daemonizes into the control group that started it, so a launcher whose group is torn down
+    afterwards — a `systemd-run` job, a container step, an agent's scheduled command — stops that server and the
+    service pane seconds after it reported a successful start. A unit with `KillMode=process` leaves the server
+    running when the unit finishes. `DSH_SUPERAGENT_SYSTEMD` forces the choice with `on` or `off`.
+    """
+    choice = (os.environ.get('DSH_SUPERAGENT_SYSTEMD') or '').strip().lower()
+    if choice == 'off':
+        return []
+    reachable = choice == 'on' or bool(os.environ.get('DBUS_SESSION_BUS_ADDRESS')) or os.path.exists(
+        os.path.join(os.environ.get('XDG_RUNTIME_DIR', ''), 'bus'))
+    if not reachable or not shutil.which('systemd-run'):
+        return []
+    # A transient unit starts from the user manager's environment rather than this caller's, so carry usable values over.
+    carried = ['--setenv=' + name + '=' + value for name, value in sorted(os.environ.items())
+               if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name) and '\n' not in value]
+    return ['systemd-run', '--user', '--collect', '--wait', '--pipe', '--quiet',
+            '--description=dsh-superagent ' + profile + ' tmux server', '-p', 'KillMode=process', *carried]
+
+
+def launch_tmux(session, exists, command, profile):
+    """Start the service pane and return the pane PID tmux prints, in a transient unit where one is available.
+
+    The wrapped attempt comes first: a launcher that exited non-zero started nothing, so asking tmux directly
+    afterwards cannot duplicate the service. A tmux that answered without a PID is not asked twice, since it may
+    well have created the session anyway.
+    """
+    target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
+    error = ''
+    for attempt in (systemd_launcher(profile), []):
+        try:
+            result = subprocess.run([*attempt, 'tmux', *target, '-d', '-P', '-F', '#{pane_pid}',
+                                     '-n', 'server', '-c', str(ROOT), command], capture_output=True, text=True,
+                                    timeout=TMUX_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f'tmux printed no pane pid within {TMUX_TIMEOUT}s; check status before starting again') from None
+        pane = result.stdout.strip()
+        if pane.isdigit():
+            return pane
+        error = (result.stderr or '').strip() or f'tmux exited {result.returncode}'
+        # Anything else on stdout came from a tmux that ran, so a second attempt could start the service twice.
+        if result.returncode == 0:
+            break
+    raise RuntimeError('Could not start dsh-superagent in tmux: ' + error)
+
+
 def start(args):
     session = 'dsh-' + args.profile
     pids = processes(args.profile)
@@ -176,12 +226,8 @@ def start(args):
         # `exec` replaces the shell so the pane PID printed by tmux is the DSH service process itself.
         command = ('umask 077; exec ' + shlex.join([dsh, '--profile', args.profile, '--no-open'])
                    + ' >> ' + shlex.quote(str(log)) + ' 2>&1')
-        # Reuse an existing tmux session without disturbing other windows.
-        target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
-        pane = subprocess.run(['tmux', *target, '-d', '-P', '-F', '#{pane_pid}', '-n', 'server', '-c', str(ROOT), command],
-                              check=True, capture_output=True, text=True).stdout.strip()
-        if pane.isdigit():
-            (control(args.profile) / 'service.pid').write_text(pane + '\n')
+        pane = launch_tmux(session, exists, command, args.profile)
+        (control(args.profile) / 'service.pid').write_text(pane + '\n')
         print('Log: ' + str(log), flush=True)
     else:
         (control(args.profile) / 'service.pid').write_text(f'{pids[0]}\n')

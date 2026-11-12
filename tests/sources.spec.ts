@@ -120,6 +120,9 @@ describe('feishu source', () => {
     expect(feishuTrigger({ message_id: 'om_6', chat_id: 'oc_1', chat_type: 'group', sender_id: MEMBER, sender_type: 'user', content: 'hi', create_time: '1' }, 'ou_bot', 'cli_bot')).not.toHaveProperty('addressed')
     expect(feishuRef(trigger)).toEqual({ triggerId: trigger.id, chatId: 'oc_1', messageId: 'om_2', at: trigger.at })
     expect(feishuTrigger({ message_id: 'om_3', chat_id: 'oc_1', chat_type: 'p2p', sender_id: 'ou_bot', sender_type: 'bot', content: 'me', create_time: '1' }, 'ou_bot', 'cli_bot')).toBeUndefined()
+    // The live consumer prints the message type as `message_type`; only non-text types reach the Trigger's meta.
+    expect(feishuTrigger({ message_id: 'om_7', chat_id: 'oc_1', chat_type: 'p2p', sender_id: MEMBER, sender_type: 'user', content: '<audio key="file_v3_x" duration="6s"/>', message_type: 'audio', create_time: '1' }, 'ou_bot', 'cli_bot')).toMatchObject({ meta: { msgType: 'audio' } })
+    expect(feishuTrigger({ message_id: 'om_8', chat_id: 'oc_1', chat_type: 'p2p', sender_id: MEMBER, sender_type: 'user', content: 'hi', message_type: 'text', create_time: '1' }, 'ou_bot', 'cli_bot')).not.toMatchObject({ meta: { msgType: expect.anything() } })
     expect(feishuTrigger(historyEvent({ message_id: 'om_4', chat_id: 'oc_1', create_time: '2', sender: { id: 'ou_x', sender_type: 'app' }, body: { content: '{"text":"from app"}' } }, 'oc_1', false), 'ou_bot', 'cli_bot')).toMatchObject({ human: false, text: 'from app', threads: [{ id: 'oc_1:om_4' }] })
   })
   it('polls subscribed threads and stores unseen replies as triggers on that thread', async () => {
@@ -1041,7 +1044,11 @@ describe('feishu event consumer', () => {
   })
   /**
    * A bot CLI whose `event consume` behaves as `mode` says: `never` gets ready, `warn` warns once ready, `ready` stays up,
-   * and `flaky` exits after its first ready. It records each run and the PID of the latest.
+   * `flaky` exits after its first ready, and `events` and `late` print event lines, `late` one second after listening.
+   * The two that print events wait first, because their ready notice arrives on another pipe: when both pipes already
+   * hold data the same poll reads stdout first, so a test that expects the parse error of a malformed line would
+   * otherwise read the later ready report over it.
+   * It records each run and the PID of the latest.
    */
   function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'late'): string {
     const path = join(dir, 'lark-bot')
@@ -1053,7 +1060,7 @@ describe('feishu event consumer', () => {
     warn) echo '[event] ready' >&2; echo 'WARN the connection was reset' >&2; exec sleep 60 ;;
     ready) echo '[event] ready' >&2; exec sleep 60 ;;
     flaky) echo '[event] ready' >&2; [ "$n" -gt 1 ] && exec sleep 60; exit 1 ;;
-    events) echo '[event] ready' >&2; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
+    events) echo '[event] ready' >&2; sleep 0.2; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
     late) echo '[event] ready' >&2; sleep 1; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
   esac
   `, { mode: 0o755 })
